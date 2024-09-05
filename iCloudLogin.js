@@ -1,9 +1,4 @@
-import readline from 'node:readline';
-
-const rl = readline.createInterface({
-	input: process.stdin,
-	output: process.stdout,
-});
+import { prompt } from "./readlineInterface.js";
 
 /**
  * Given a Puppeteer Page object, run through the steps of logging into an iCloud account.
@@ -14,11 +9,6 @@ export async function iCloudLogin(page){
 
 	// Helper function to sleep 
 	const sleep = timeout => new Promise(resolve=>setTimeout(resolve, timeout));
-
-	// Helper function to get input from user via command line
-	const prompt = question => new Promise(resolve => {
-		rl.question(question, resolve);
-	});
 
 	// Navigate to the iCloud site
 	await page.goto('https://www.icloud.com/');
@@ -40,6 +30,8 @@ export async function iCloudLogin(page){
 	const username_input = await sign_in_frame.$('#account_name_text_field');
 	let email = await prompt("Enter your iCloud email: ");
 	await username_input.type(email);
+
+	await sleep(1000);
 
 	// Hit enter and wait for the password field
 	await Promise.all([
@@ -100,7 +92,7 @@ export async function iCloudLogin(page){
 	let prompted_to_trust_browser = !!(await sign_in_frame.$('button[type="submit"]'));
 	if(prompted_to_trust_browser){
 		await sign_in_frame.click('button[type="submit"]');
-		await page.waitForNetworkIdle();
+		try{ await page.waitForNetworkIdle() }catch(e){};
 	}
 	
 	return true;
