@@ -1,4 +1,5 @@
 import { prompt } from "./readlineInterface.js";
+import { sleep } from "./sleep.js";
 
 /**
  * Given a Puppeteer Page object, run through the steps of logging into an iCloud account.
@@ -6,9 +7,6 @@ import { prompt } from "./readlineInterface.js";
  * @returns Promise<bool>
  */
 export async function iCloudLogin(page){
-
-	// Helper function to sleep 
-	const sleep = timeout => new Promise(resolve=>setTimeout(resolve, timeout));
 
 	// Navigate to the iCloud site
 	await page.goto('https://www.icloud.com/');
