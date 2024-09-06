@@ -105,6 +105,9 @@ console.log('clicking');
 await confirm_delete_btn.click();
 await sleep(500);
 
+// TODO: Unzip the downloaded file to prevent overwriting it because chrome wont pick a unique name for it..
+// Also probably check to make sure that the file doesn't exiust int he firsdt place.
+
 await (function waitForDelete(total_grid_items){
 	return new Promise(resolve=>{
 		const checkItemCount = async ()=>{
