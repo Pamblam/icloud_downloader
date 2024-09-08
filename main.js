@@ -141,7 +141,7 @@ while(true){
 
 	// Wait for the delete to finish
 	while(true){
-		sleep(500);
+		await sleep(500);
 		let delete_complete = !(await frame.$('.PhotoItemView.is-selected'));
 		if(delete_complete) break;
 	}
