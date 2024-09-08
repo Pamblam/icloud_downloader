@@ -7,10 +7,9 @@ import { sleep } from "./sleep.js";
 import { waitForDownload } from './waitForDownload.js';
 import os from "os";
 import path from "path";
-import {extractZipAndDelete} from './extractZipAndDelete.js';
-import { uniquifyFilePath } from './uniquifyFilePath.js';
+import { processArchive } from './processArchive.js';
 
-const headless = true;
+const headless = false;
 const items_per_iteration = 5;
 const temp_dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'icloud-downloader'));
 const zip_source = path.join(temp_dir, 'iCloud Photos.zip');
@@ -114,17 +113,12 @@ while(true){
 	});
 	console.log(''); // To create a new line
 
-	// If the archive is less that 2 gigs, de-archive it, else just copy the whole thing
-	if(fs.statSync(zip_source).size > 2e+9){
-		let dest = uniquifyFilePath(`${destination_path}/iCloud Photos.zip`);
-		fs.renameSync(zip_source, dest);
-		console.log('Too large to extract, moving entire archive.');
-	}else{
-		extractZipAndDelete(zip_source, destination_path, filename=>{
-			completed_items++;
-			console.log(`Extracted ${completed_items} of ${total_items}: ${filename}`);
-		});
-	}
+	// Extract the file
+	await processArchive(zip_source, destination_path, filename=>{
+		completed_items++;
+		console.log(`Extracted ${completed_items} of ${total_items}: ${filename}`);
+	});
+	fs.unlinkSync(zip_source);
 
 	// Delete the ones we just downloaded.
 	await sleep(500);

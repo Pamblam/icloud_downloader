@@ -11,8 +11,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "adm-zip": "^0.5.16",
-    "puppeteer": "^23.2.1"
+    "puppeteer": "^23.2.1",
+    "unzip-stream": "^0.3.4"
   },
   "type": "module"
 }
