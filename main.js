@@ -1,15 +1,16 @@
 import puppeteer from 'puppeteer';
-import { iCloudLogin } from './iCloudLogin.js';
-import {getDisks, chooseDownloadDrive} from './getDisks.js';
-import fs from "fs";
-import { prompt, writeOverLine } from "./readlineInterface.js";
-import { sleep } from "./sleep.js";
-import { waitForDownload } from './waitForDownload.js';
 import os from "os";
 import path from "path";
-import { processArchive } from './processArchive.js';
+import fs from "fs";
 
-const headless = false;
+import { iCloudLogin } from './modules/iCloudLogin.js';
+import {getDisks, chooseDownloadDrive} from './modules/getDisks.js';
+import { prompt, writeOverLine } from "./modules/readlineInterface.js";
+import { sleep } from "./modules/sleep.js";
+import { waitForDownload } from './modules/waitForDownload.js';
+import { processArchive } from './modules/processArchive.js';
+
+const headless = true;
 const items_per_iteration = 5;
 const temp_dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'icloud-downloader'));
 const zip_source = path.join(temp_dir, 'iCloud Photos.zip');
