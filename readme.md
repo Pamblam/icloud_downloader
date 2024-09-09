@@ -16,6 +16,7 @@ This was written for my own personal use and intended to be run on a Mac. Feel f
  6. When prompted enter your iCloud email/password.
  7. When prompted, enter the security code.
  8. Wait.
+ 9. When your content is downloaded, you can clear your iCloud storage by running `npm run delete` to permanently remove it from the cloud.
 
 # Behaviour
 

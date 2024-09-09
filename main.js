@@ -149,8 +149,5 @@ while(true){
 	await sleep(1000);
 }
 
-
-
-
-
-
+console.log("All done!");
+process.exit();
