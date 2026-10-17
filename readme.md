@@ -12,11 +12,17 @@ This was written for my own personal use and intended to be run on a Mac. Feel f
  2. `cd` into the repo
  3. `npm i`
  4. `npm run main`
- 5. When prompted, select the drive and path at which to save files.
- 6. When prompted enter your iCloud email/password.
- 7. When prompted, enter the security code.
- 8. Wait.
- 9. When your content is downloaded, you can clear your iCloud storage by running `npm run delete` to permanently remove it from the cloud.
+ 5. When prompted, choose whether to run the browser hidden (headless) or visible.
+ 6. When prompted, select the drive and path at which to save files.
+ 7. When prompted enter your iCloud email/password.
+ 8. Choose whether to save your answers to `config.json`. Saved answers become the defaults next time, so you can just press Enter.
+ 9. When prompted, enter the security code.
+ 10. Wait. A progress bar shows how far along it is and what it's doing right now.
+ 11. When your content is downloaded, you can clear your iCloud storage by running `npm run delete` to permanently remove it from the cloud.
+
+# Config
+
+`config.json` (next to `main.js`) stores your answers: headless mode, drive, folder, email and, if you choose, your password. The password is stored as plain text, so the file is readable only by your user account and is excluded from git. Delete the file to start fresh.
 
 # Behaviour
 

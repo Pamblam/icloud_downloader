@@ -1,25 +1,44 @@
-import puppeteer from 'puppeteer';
 
+import { launchBrowser } from './modules/launchBrowser.js';
+import { clickElement, hoverElement } from './modules/clickElement.js';
 import { iCloudLogin } from './modules/iCloudLogin.js';
 import { sleep } from "./modules/sleep.js";
-import { prompt } from "./modules/readlineInterface.js";
+import { askSettings, askCredentials } from './modules/settings.js';
+import { progress } from './modules/progress.js';
 
-const headless = true;
 const items_per_iteration = 50;
 
-const browser = await puppeteer.launch({headless});
-const page = await browser.newPage();
+// Make sure errors print on their own line instead of after the status display.
+process.on('uncaughtException', e=>{
+	progress.stop();
+	console.error(e);
+	process.exit(1);
+});
 
-let login_success = await iCloudLogin(page);
+const settings = await askSettings(false);
+
+progress.start();
+progress.setStep('Starting the browser');
+const {browser, page} = await launchBrowser(settings.headless);
+
+let login_success = await iCloudLogin(page, settings, async ()=>{
+	const credentials = await askCredentials();
+	settings.saveCredentials(credentials);
+	return credentials;
+});
 
 if(!login_success){
+	progress.stop();
 	console.log('Unable to login.');
 	process.exit();
 }
 
-console.log('Login success!');
+progress.log('Signed in.');
+let batch = 0;
+let deleted = 0;
 
 // Open the photos page
+progress.setStep('Opening Recently Deleted');
 await page.goto('https://www.icloud.com/photos/#/recentlydeleted/');
 
 
@@ -39,50 +58,65 @@ while(true){
 	let grid_items = await frame.$$('.grid-item');
 
 	if(!grid_items.length){
-		console.log('Nothing left to delete.');
+		progress.log('Nothing left to delete.');
 		break;
 	}
 
 	// Press shift and select the first n items
 	let items_to_process = Math.min(grid_items.length, items_per_iteration);
+	batch++;
+	const step = text => progress.setStep(`Batch ${batch} (${items_to_process} items, ${deleted.toLocaleString()} deleted so far)`, text);
+	step('selecting items');
 	await page.keyboard.down('Shift');
 	for(let i=0; i<items_to_process; i++){
-		await grid_items[i].click();
+		await clickElement(page, grid_items[i]);
 		await sleep(500);
 	}
 	await page.keyboard.up('Shift');
 	await sleep(500);
 
 	// Wait for the .has_asset class to indicate that the item is loaded
+	step('waiting for the selected items to load');
 	await frame.waitForSelector('.PhotoItemView.is-selected.has-asset');
 
 	// Click the delete button
+	step('permanently deleting');
 	let dl_btn = await frame.$('.ExpungeButton');
-	await dl_btn.hover();
-	await dl_btn.click();
+	await clickElement(page, dl_btn);
 
 	// Confirm the delete
 	let confirm_delete_btn = await frame.waitForSelector('.destructive');
 	await sleep(500);
-	await confirm_delete_btn.hover();
+	await hoverElement(page, confirm_delete_btn);
 	await sleep(500);
 
-	// Wait for the spinner to to show up and click confirm delete button
-	await Promise.all([
-		frame.waitForSelector('.Spinner'),
-		confirm_delete_btn.click()
-	]);
+	await clickElement(page, confirm_delete_btn);
 
-	// Wait for the delete to finish
+	// Wait for the delete to finish. Don't wait on the .Spinner: on fast deletes it can come and
+	// go before we see it. The selected items disappearing is the real signal.
+	step('waiting for iCloud to finish deleting');
+	let delete_started = Date.now();
 	while(true){
 		await sleep(500);
 		let delete_complete = !(await frame.$('.PhotoItemView.is-selected'));
 		if(delete_complete) break;
+
+		// If the confirm dialog is still up after a few seconds, the click didn't register; retry it.
+		let confirm_still_open = await frame.$('.destructive');
+		if(confirm_still_open && Date.now() - delete_started > 5000){
+			await clickElement(page, confirm_still_open);
+			delete_started = Date.now();
+		}
+
+		if(Date.now() - delete_started > 120000){
+			throw new Error('Timed out waiting for the delete to finish.');
+		}
 	}
 
-	console.log(`Deleted ${items_to_process} items.`);
+	deleted += items_to_process;
 	await sleep(1000);
 }
 
-console.log("All done!");
+progress.stop();
+console.log(`All done! Permanently deleted ${deleted.toLocaleString()} items.`);
 process.exit();
