@@ -8,8 +8,14 @@ import { debug_dir } from "./errorHandler.js";
 const countSelected = frame => frame.$$eval('.PhotoItemView.is-selected', els=>els.length);
 const isSelected = item=>item.evaluate(el=>el.matches('.is-selected') || !!el.querySelector('.is-selected')).catch(()=>false);
 
-// Thrown when iCloud clears the selection before the download starts. Harmless, so we just select again.
-class SelectionLost extends Error {}
+// Thrown when the batch isn't (fully) selected before the download starts. Harmless, so we just select again.
+class SelectionLost extends Error {
+	constructor(selected, wanted){
+		super();
+		this.selected = selected;
+		this.wanted = wanted;
+	}
+}
 
 async function shiftClickEach(page, items, click){
 	await page.keyboard.down('Shift');
@@ -56,16 +62,22 @@ export async function waitForGridToSettle(frame, timeout = 15000){
 export async function selectGridItems(page, frame, count, onStep){
 	const max_attempts = 3;
 	for(let attempt=1; ; attempt++){
+		// Start from the top of the grid each time, so the batch is the first photos.
+		await frame.evaluate(()=>document.querySelector('.grid-scroll')?.scrollTo(0, 0));
+		await sleep(500);
 		const items = (await frame.$$('.grid-item')).slice(0, count);
 		try{
 			await selectOnce(page, frame, items, onStep);
 			return items;
 		}catch(e){
 			if(!(e instanceof SelectionLost)) throw e;
+			const problem = e.selected
+				? `only ${e.selected} of ${e.wanted} photos got selected`
+				: `iCloud cleared the selection`;
 			if(attempt >= max_attempts){
-				throw new Error(`iCloud kept clearing the selection before the download could start (${max_attempts} tries). Nothing from this batch was downloaded or deleted.\n${await saveDebugInfo(page, frame, items[0])}`);
+				throw new Error(`Couldn't select the batch: ${problem} (${max_attempts} tries). Nothing from this batch was downloaded or deleted.\n${await saveDebugInfo(page, frame, items[0])}`);
 			}
-			onStep(`iCloud cleared the selection, selecting again (try ${attempt+1} of ${max_attempts})`);
+			onStep(`${problem}, selecting again (try ${attempt+1} of ${max_attempts})`);
 			await waitForGridToSettle(frame);
 		}
 	}
@@ -93,11 +105,13 @@ async function selectOnce(page, frame, items, onStep){
 	}catch(e){
 		throw new Error(`${await countSelected(frame)} items were selected but never finished loading.\n${await saveDebugInfo(page, frame, items[0])}`);
 	}
-	if(state === 'lost') throw new SelectionLost();
+	if(state === 'lost') throw new SelectionLost(0, items.length);
 
 	// The download takes whatever is selected, so make sure that's exactly this batch.
 	const states = await Promise.all(items.map(isSelected));
-	if(!states.every(Boolean) || await countSelected(frame) !== items.length) throw new SelectionLost();
+	if(!states.every(Boolean) || await countSelected(frame) !== items.length){
+		throw new SelectionLost(await countSelected(frame), items.length);
+	}
 }
 
 /**
