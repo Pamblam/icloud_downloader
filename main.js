@@ -4,9 +4,12 @@ import fs from "fs";
 
 import { launchBrowser } from './modules/launchBrowser.js';
 import { clickElement, hoverElement } from './modules/clickElement.js';
+import { selectGridItems, waitForGridToSettle, waitForThumbnails, fingerprintItems, ensureSelectedForDelete } from './modules/selectGridItems.js';
 import { iCloudLogin } from './modules/iCloudLogin.js';
 import { askSettings, askCredentials } from './modules/settings.js';
 import { progress } from './modules/progress.js';
+import { dismissAlert } from './modules/alerts.js';
+import { handleErrors, setBrowserForErrors } from './modules/errorHandler.js';
 import { sleep } from "./modules/sleep.js";
 import { waitForDownload } from './modules/waitForDownload.js';
 import { processArchive } from './modules/processArchive.js';
@@ -15,12 +18,8 @@ const items_per_iteration = 5;
 const temp_dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'icloud-downloader'));
 const zip_source = path.join(temp_dir, 'iCloud Photos.zip');
 
-// Make sure errors print on their own line instead of after the status display.
-process.on('uncaughtException', e=>{
-	progress.stop();
-	console.error(e);
-	process.exit(1);
-});
+// Print errors on their own line and screenshot the browser when one happens.
+handleErrors();
 
 const settings = await askSettings(true);
 const destination_path = settings.destination_path;
@@ -28,6 +27,7 @@ const destination_path = settings.destination_path;
 progress.start();
 progress.setStep('Starting the browser');
 const {browser, page} = await launchBrowser(settings.headless);
+setBrowserForErrors(browser);
 
 let login_success = await iCloudLogin(page, settings, async ()=>{
 	const credentials = await askCredentials();
@@ -36,29 +36,35 @@ let login_success = await iCloudLogin(page, settings, async ()=>{
 });
 
 if(!login_success){
-	progress.stop();
-	console.log('Unable to login.');
-	process.exit();
+	// Thrown so the error handler saves a screenshot of what iCloud is showing.
+	throw new Error(`iCloud didn't finish signing in.`
+		+ (settings.headless ? ` iCloud may not accept sign-ins from a hidden browser; try again and answer "n" to running headless.` : ''));
 }
 
 progress.log('Signed in.');
 progress.setStep('Counting photos and videos');
 
-await page.waitForSelector('article[aria-label="Photos"] .description-text-content');
-
-// Parse the piece of text that shows how many photos and videos there are
-let total_items = await page.evaluate(async ()=>{
-	return document
-		.querySelector('article[aria-label="Photos"] .description-text-content')
-		.innerText
-		.replaceAll(/,/g, '')
-		.match(/\d+/g)
-		.map(i=>parseInt(i))
-		.reduce((a,c)=>a+c,0);
-});
-
+// Parse the piece of text on the iCloud home page that shows how many photos and videos there are.
+// It's only used for the progress bar, so carry on without it if it can't be found.
+let total_items = 0;
+try{
+	await page.waitForSelector('article[aria-label="Photos"] .description-text-content', {timeout: 60000});
+	total_items = await page.evaluate(async ()=>{
+		return document
+			.querySelector('article[aria-label="Photos"] .description-text-content')
+			.innerText
+			.replaceAll(/,/g, '')
+			.match(/\d+/g)
+			.map(i=>parseInt(i))
+			.reduce((a,c)=>a+c,0);
+	});
+}catch(e){
+	progress.log(`Couldn't find how many photos and videos there are (${e.message.split('\n')[0]}). Continuing without a total.`);
+}
 progress.setTotal(total_items);
 let batch = 0;
+let delete_failures = 0;
+const max_delete_failures = 5;
 
 // Open the photos page
 progress.setStep('Opening iCloud Photos');
@@ -95,22 +101,19 @@ while(true){
 		break;
 	}
 
+	// Close any alert iCloud left up (it would block clicking the grid).
+	const stray_alert = await dismissAlert(frame);
+	if(stray_alert) progress.log(`iCloud showed an alert: "${stray_alert}". Closed it and carrying on.`);
+
 	// Press shift and select the first n items
 	let items_to_process = Math.min(grid_items.length, items_per_iteration);
 	batch++;
 	const step = text => progress.setStep(`Batch ${batch} (${items_to_process} items)`, text);
 	step('selecting items');
-	await page.keyboard.down('Shift');
-	for(let i=0; i<items_to_process; i++){
-		await clickElement(page, grid_items[i]);
-		await sleep(500);
-	}
-	await page.keyboard.up('Shift');
-	await sleep(500);
-
-	// Wait for the .has_asset class to indicate that the item is loaded
-	step('waiting for the selected items to load');
-	await frame.waitForSelector('.PhotoItemView.is-selected.has-asset');
+	const batch_items = await selectGridItems(page, frame, items_to_process, step);
+	step('waiting for thumbnails to load');
+	await waitForThumbnails(frame, items_to_process);
+	const batch_fingerprints = await fingerprintItems(batch_items);
 
 	// Click the download button
 	step('waiting for iCloud to prepare the download');
@@ -124,20 +127,26 @@ while(true){
 
 	// Extract the file
 	step('extracting');
-	await processArchive(zip_source, destination_path, filename=>{
-		progress.addFile();
-		step(`extracted ${path.basename(filename)}`);
+	await processArchive(zip_source, destination_path, (filename, skipped)=>{
+		if(skipped){
+			progress.addSkipped();
+			step(`skipped ${path.basename(filename)} (already saved)`);
+		}else{
+			progress.addFile();
+			step(`extracted ${path.basename(filename)}`);
+		}
 	});
 	fs.unlinkSync(zip_source);
 
 	// Delete the ones we just downloaded.
 	step('deleting from iCloud');
 	await sleep(500);
+	await ensureSelectedForDelete(page, frame, batch_items, batch_fingerprints, step);
 	let del_btn = await frame.$('.DeleteButton');
 	await clickElement(page, del_btn);
 
 	// Confirm the delete
-	let confirm_delete_btn = await frame.waitForSelector('.destructive');
+	let confirm_delete_btn = await frame.waitForSelector('.destructive', {timeout: 60000});
 	await sleep(500);
 	await hoverElement(page, confirm_delete_btn);
 	await sleep(500);
@@ -148,8 +157,12 @@ while(true){
 	// go before we see it. The selected items disappearing is the real signal.
 	step('waiting for iCloud to finish deleting');
 	let delete_started = Date.now();
+	let delete_error = null;
 	while(true){
 		await sleep(500);
+		// iCloud reports a failed delete with an alert, e.g. "Unable to Delete Items ... server error".
+		delete_error = await dismissAlert(frame);
+		if(delete_error) break;
 		let delete_complete = !(await frame.$('.PhotoItemView.is-selected'));
 		if(delete_complete) break;
 
@@ -165,10 +178,29 @@ while(true){
 		}
 	}
 
+	// iCloud clears selections made while it's still shuffling the grid after a delete.
+	step('waiting for the photo grid to settle');
+	await waitForGridToSettle(frame);
+
+	// The failed-delete alert sometimes only shows up after the selection has cleared.
+	delete_error ??= await dismissAlert(frame);
+	if(delete_error){
+		// The photos are still at the top of the grid, so the next batch picks them up again.
+		delete_failures++;
+		if(delete_failures >= max_delete_failures){
+			throw new Error(`iCloud failed to delete ${max_delete_failures} batches in a row (last error: "${delete_error}"). Everything up to now is saved; try again later.`);
+		}
+		const wait = 15 * delete_failures;
+		progress.log(`Batch ${batch}: iCloud couldn't delete it ("${delete_error}"). Retrying in ${wait}s.`);
+		step(`waiting ${wait}s before retrying`);
+		await sleep(wait * 1000);
+		continue;
+	}
+	delete_failures = 0;
 	progress.addDone(items_to_process);
-	await sleep(1000);
 }
 
 progress.stop();
-console.log(`All done! Saved ${progress.files.toLocaleString()} files from ${progress.done.toLocaleString()} items to ${destination_path}`);
+console.log(`All done! Saved ${progress.files.toLocaleString()} files from ${progress.done.toLocaleString()} items to ${destination_path}`
+	+ (progress.skipped ? ` (skipped ${progress.skipped.toLocaleString()} already saved)` : ''));
 process.exit();

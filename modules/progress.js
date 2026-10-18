@@ -22,6 +22,7 @@ export class Progress {
 		this.total = 0;
 		this.done = 0;
 		this.files = 0;
+		this.skipped = 0;
 		this.step = '';
 		this.detail = '';
 		this.started = null;
@@ -65,6 +66,7 @@ export class Progress {
 
 	addDone(n){ this.done += n; this.render(); }
 	addFile(){ this.files++; }
+	addSkipped(){ this.skipped++; }
 
 	/** Print a message above the status display. */
 	log(message){
@@ -94,7 +96,10 @@ export class Progress {
 			const bar = '█'.repeat(filled) + '░'.repeat(bar_width - filled);
 			const elapsed = Date.now() - this.started;
 			const eta = this.done ? formatDuration(elapsed / this.done * (this.total - this.done)) : '--';
-			lines.push(fit(` ${bar} ${(ratio * 100).toFixed(1).padStart(5)}%  ${this.done.toLocaleString()} / ${this.total.toLocaleString()} items  ·  ${this.files.toLocaleString()} files saved  ·  ${formatDuration(elapsed)} elapsed  ·  ETA ${eta}`));
+			lines.push(fit(` ${bar} ${(ratio * 100).toFixed(1).padStart(5)}%  ${this.done.toLocaleString()} / ${this.total.toLocaleString()} items  ·  ${this.files.toLocaleString()} files saved${this.skipped ? ` (${this.skipped.toLocaleString()} duplicates skipped)` : ''}  ·  ${formatDuration(elapsed)} elapsed  ·  ETA ${eta}`));
+		}else if(this.started){
+			// Total unknown, so there's nothing to fill a bar against.
+			lines.push(fit(` ${this.done.toLocaleString()} items  ·  ${this.files.toLocaleString()} files saved${this.skipped ? ` (${this.skipped.toLocaleString()} duplicates skipped)` : ''}  ·  ${formatDuration(Date.now() - this.started)} elapsed`));
 		}
 		const spinner = spinner_frames[this.frame % spinner_frames.length];
 		lines.push(fit(` ${spinner} ${this.step}${this.detail ? `: ${this.detail}` : ''}`));

@@ -20,9 +20,5 @@ export async function launchBrowser(headless){
 	});
 	const page = await browser.newPage();
 
-	// Headless Chrome advertises itself as "HeadlessChrome", which iCloud can treat differently.
-	const user_agent = await browser.userAgent();
-	await page.setUserAgent(user_agent.replace('HeadlessChrome', 'Chrome'));
-
 	return {browser, page};
 }

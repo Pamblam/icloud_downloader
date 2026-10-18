@@ -120,5 +120,16 @@ export async function iCloudLogin(page, credentials, onBadLogin){
 		}
 	}catch(e){} // The sign-in frame may already be gone, which is fine.
 
+	// Confirm the sign-in actually took: the sign-in form goes away and no Sign In button is left.
+	progress.setDetail('waiting for iCloud to finish signing in');
+	try{
+		await page.waitForFunction(
+			()=>!document.querySelector('#aid-auth-widget-iFrame') && !document.querySelector('.sign-in-button'),
+			{timeout: 30000}
+		);
+	}catch(e){
+		return false;
+	}
+
 	return true;
 }

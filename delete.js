@@ -1,25 +1,25 @@
 
 import { launchBrowser } from './modules/launchBrowser.js';
 import { clickElement, hoverElement } from './modules/clickElement.js';
+import { selectGridItems, waitForGridToSettle } from './modules/selectGridItems.js';
 import { iCloudLogin } from './modules/iCloudLogin.js';
 import { sleep } from "./modules/sleep.js";
 import { askSettings, askCredentials } from './modules/settings.js';
 import { progress } from './modules/progress.js';
+import { dismissAlert } from './modules/alerts.js';
+import { handleErrors, setBrowserForErrors } from './modules/errorHandler.js';
 
 const items_per_iteration = 50;
 
-// Make sure errors print on their own line instead of after the status display.
-process.on('uncaughtException', e=>{
-	progress.stop();
-	console.error(e);
-	process.exit(1);
-});
+// Print errors on their own line and screenshot the browser when one happens.
+handleErrors();
 
 const settings = await askSettings(false);
 
 progress.start();
 progress.setStep('Starting the browser');
 const {browser, page} = await launchBrowser(settings.headless);
+setBrowserForErrors(browser);
 
 let login_success = await iCloudLogin(page, settings, async ()=>{
 	const credentials = await askCredentials();
@@ -28,13 +28,15 @@ let login_success = await iCloudLogin(page, settings, async ()=>{
 });
 
 if(!login_success){
-	progress.stop();
-	console.log('Unable to login.');
-	process.exit();
+	// Thrown so the error handler saves a screenshot of what iCloud is showing.
+	throw new Error(`iCloud didn't finish signing in.`
+		+ (settings.headless ? ` iCloud may not accept sign-ins from a hidden browser; try again and answer "n" to running headless.` : ''));
 }
 
 progress.log('Signed in.');
 let batch = 0;
+let delete_failures = 0;
+const max_delete_failures = 5;
 let deleted = 0;
 
 // Open the photos page
@@ -62,22 +64,16 @@ while(true){
 		break;
 	}
 
+	// Close any alert iCloud left up (it would block clicking the grid).
+	const stray_alert = await dismissAlert(frame);
+	if(stray_alert) progress.log(`iCloud showed an alert: "${stray_alert}". Closed it and carrying on.`);
+
 	// Press shift and select the first n items
 	let items_to_process = Math.min(grid_items.length, items_per_iteration);
 	batch++;
 	const step = text => progress.setStep(`Batch ${batch} (${items_to_process} items, ${deleted.toLocaleString()} deleted so far)`, text);
 	step('selecting items');
-	await page.keyboard.down('Shift');
-	for(let i=0; i<items_to_process; i++){
-		await clickElement(page, grid_items[i]);
-		await sleep(500);
-	}
-	await page.keyboard.up('Shift');
-	await sleep(500);
-
-	// Wait for the .has_asset class to indicate that the item is loaded
-	step('waiting for the selected items to load');
-	await frame.waitForSelector('.PhotoItemView.is-selected.has-asset');
+	await selectGridItems(page, frame, items_to_process, step);
 
 	// Click the delete button
 	step('permanently deleting');
@@ -96,8 +92,12 @@ while(true){
 	// go before we see it. The selected items disappearing is the real signal.
 	step('waiting for iCloud to finish deleting');
 	let delete_started = Date.now();
+	let delete_error = null;
 	while(true){
 		await sleep(500);
+		// iCloud reports a failed delete with an alert, e.g. "Unable to Delete Items ... server error".
+		delete_error = await dismissAlert(frame);
+		if(delete_error) break;
 		let delete_complete = !(await frame.$('.PhotoItemView.is-selected'));
 		if(delete_complete) break;
 
@@ -113,8 +113,26 @@ while(true){
 		}
 	}
 
+	// iCloud clears selections made while it's still shuffling the grid after a delete.
+	step('waiting for the photo grid to settle');
+	await waitForGridToSettle(frame);
+
+	// The failed-delete alert sometimes only shows up after the selection has cleared.
+	delete_error ??= await dismissAlert(frame);
+	if(delete_error){
+		// The photos are still at the top of the grid, so the next batch picks them up again.
+		delete_failures++;
+		if(delete_failures >= max_delete_failures){
+			throw new Error(`iCloud failed to delete ${max_delete_failures} batches in a row (last error: "${delete_error}"). Try again later.`);
+		}
+		const wait = 15 * delete_failures;
+		progress.log(`Batch ${batch}: iCloud couldn't delete it ("${delete_error}"). Retrying in ${wait}s.`);
+		step(`waiting ${wait}s before retrying`);
+		await sleep(wait * 1000);
+		continue;
+	}
+	delete_failures = 0;
 	deleted += items_to_process;
-	await sleep(1000);
 }
 
 progress.stop();
