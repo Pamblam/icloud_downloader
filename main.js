@@ -4,7 +4,7 @@ import fs from "fs";
 
 import { launchBrowser } from './modules/launchBrowser.js';
 import { clickElement, hoverElement } from './modules/clickElement.js';
-import { selectGridItems, waitForGridToSettle, waitForThumbnails, fingerprintItems, ensureSelectedForDelete } from './modules/selectGridItems.js';
+import { selectGridItems, waitForGridToSettle, isStillSelected } from './modules/selectGridItems.js';
 import { iCloudLogin } from './modules/iCloudLogin.js';
 import { askSettings, askCredentials } from './modules/settings.js';
 import { progress } from './modules/progress.js';
@@ -63,8 +63,24 @@ try{
 }
 progress.setTotal(total_items);
 let batch = 0;
-let delete_failures = 0;
-const max_delete_failures = 5;
+let failures_in_a_row = 0;
+const max_failures_in_a_row = 5;
+
+/**
+ * A batch was downloaded but couldn't be deleted. Its photos are still at the top of the grid, so the
+ * next batch picks them up again (re-downloads them, skips the files as duplicates, and deletes them).
+ * Waits a bit longer each time, and gives up if it keeps happening.
+ */
+async function redoBatch(reason){
+	failures_in_a_row++;
+	if(failures_in_a_row >= max_failures_in_a_row){
+		throw new Error(`${max_failures_in_a_row} batches in a row couldn't be deleted (last: ${reason}). Everything up to now is saved; try again later.`);
+	}
+	const wait = 15 * failures_in_a_row;
+	progress.log(`Batch ${batch}: ${reason}. Nothing was deleted; redoing it in ${wait}s.`);
+	progress.setStep(`Batch ${batch}`, `waiting ${wait}s before redoing it`);
+	await sleep(wait * 1000);
+}
 
 // Open the photos page
 progress.setStep('Opening iCloud Photos');
@@ -111,9 +127,6 @@ while(true){
 	const step = text => progress.setStep(`Batch ${batch} (${items_to_process} items)`, text);
 	step('selecting items');
 	const batch_items = await selectGridItems(page, frame, items_to_process, step);
-	step('waiting for thumbnails to load');
-	await waitForThumbnails(frame, items_to_process);
-	const batch_fingerprints = await fingerprintItems(batch_items);
 
 	// Click the download button
 	step('waiting for iCloud to prepare the download');
@@ -141,7 +154,12 @@ while(true){
 	// Delete the ones we just downloaded.
 	step('deleting from iCloud');
 	await sleep(500);
-	await ensureSelectedForDelete(page, frame, batch_items, batch_fingerprints, step);
+	// Only delete if exactly what was downloaded is still selected. If iCloud dropped the selection,
+	// don't try to work out which photos to reselect (its tiles have no stable ID); redo the batch.
+	if(!await isStillSelected(frame, batch_items)){
+		await redoBatch('iCloud lost the selection before it could be deleted');
+		continue;
+	}
 	let del_btn = await frame.$('.DeleteButton');
 	await clickElement(page, del_btn);
 
@@ -185,18 +203,10 @@ while(true){
 	// The failed-delete alert sometimes only shows up after the selection has cleared.
 	delete_error ??= await dismissAlert(frame);
 	if(delete_error){
-		// The photos are still at the top of the grid, so the next batch picks them up again.
-		delete_failures++;
-		if(delete_failures >= max_delete_failures){
-			throw new Error(`iCloud failed to delete ${max_delete_failures} batches in a row (last error: "${delete_error}"). Everything up to now is saved; try again later.`);
-		}
-		const wait = 15 * delete_failures;
-		progress.log(`Batch ${batch}: iCloud couldn't delete it ("${delete_error}"). Retrying in ${wait}s.`);
-		step(`waiting ${wait}s before retrying`);
-		await sleep(wait * 1000);
+		await redoBatch(`iCloud couldn't delete it ("${delete_error}")`);
 		continue;
 	}
-	delete_failures = 0;
+	failures_in_a_row = 0;
 	progress.addDone(items_to_process);
 }
 
